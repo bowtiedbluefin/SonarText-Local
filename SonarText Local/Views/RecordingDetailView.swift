@@ -21,6 +21,7 @@ struct RecordingDetailView: View {
     @State private var isEditingTitle = false
     @State private var editedTitle = ""
     @State private var showTimestamps = false
+    @State private var showAllTimestamps = false
     @State private var showSpeakers = true
     @State private var showSpeakerMappingSheet = false
     @State private var speakerMappings: [String: String] = [:]
@@ -334,6 +335,13 @@ struct RecordingDetailView: View {
                         .toggleStyle(.checkbox)
                         .font(.caption)
                     
+                    if showTimestamps {
+                        Toggle("All", isOn: $showAllTimestamps)
+                            .toggleStyle(.checkbox)
+                            .font(.caption)
+                            .help("Show timestamp for every segment")
+                    }
+                    
                     Toggle("Speakers", isOn: $showSpeakers)
                         .toggleStyle(.checkbox)
                         .font(.caption)
@@ -378,6 +386,40 @@ struct RecordingDetailView: View {
             return applyMappingsToText(transcript.text)
         }
         
+        if showTimestamps && showAllTimestamps {
+            return formatWithAllTimestamps(segments)
+        } else if showTimestamps {
+            return formatWithSpeakerTimestamps(segments)
+        } else {
+            return formatGroupedBySpeaker(segments)
+        }
+    }
+    
+    private func formatWithAllTimestamps(_ segments: [TranscriptionSegment]) -> String {
+        var lines: [String] = []
+        
+        for segment in segments {
+            let speaker = segment.speaker ?? "Unknown"
+            let mappedSpeaker = speakerMappings[speaker] ?? speaker
+            
+            var prefix = ""
+            if let time = segment.start {
+                let minutes = Int(time) / 60
+                let seconds = Int(time) % 60
+                prefix += "[\(String(format: "%02d:%02d", minutes, seconds))] "
+            }
+            
+            if showSpeakers {
+                prefix += "\(mappedSpeaker): "
+            }
+            
+            lines.append(prefix + segment.text.trimmingCharacters(in: .whitespaces))
+        }
+        
+        return lines.joined(separator: "\n")
+    }
+    
+    private func formatWithSpeakerTimestamps(_ segments: [TranscriptionSegment]) -> String {
         var lines: [String] = []
         var currentSpeaker: String? = nil
         var currentText = ""
@@ -388,46 +430,80 @@ struct RecordingDetailView: View {
             
             if speaker != currentSpeaker {
                 if !currentText.isEmpty {
-                    lines.append(formatSegmentLine(
-                        speaker: currentSpeaker.map { speakerMappings[$0] ?? $0 },
-                        startTime: currentStartTime,
-                        text: currentText
-                    ))
+                    let mappedSpeaker = currentSpeaker.map { speakerMappings[$0] ?? $0 }
+                    var prefix = ""
+                    if let time = currentStartTime {
+                        let minutes = Int(time) / 60
+                        let seconds = Int(time) % 60
+                        prefix += "[\(String(format: "%02d:%02d", minutes, seconds))] "
+                    }
+                    if showSpeakers, let spk = mappedSpeaker {
+                        prefix += "\(spk): "
+                    }
+                    lines.append(prefix + currentText)
+                }
+                currentSpeaker = speaker
+                currentText = segment.text.trimmingCharacters(in: .whitespaces)
+                currentStartTime = segment.start
+            } else {
+                currentText += " " + segment.text.trimmingCharacters(in: .whitespaces)
+            }
+        }
+        
+        if !currentText.isEmpty {
+            let mappedSpeaker = currentSpeaker.map { speakerMappings[$0] ?? $0 }
+            var prefix = ""
+            if let time = currentStartTime {
+                let minutes = Int(time) / 60
+                let seconds = Int(time) % 60
+                prefix += "[\(String(format: "%02d:%02d", minutes, seconds))] "
+            }
+            if showSpeakers, let spk = mappedSpeaker {
+                prefix += "\(spk): "
+            }
+            lines.append(prefix + currentText)
+        }
+        
+        return lines.joined(separator: "\n\n")
+    }
+    
+    private func formatGroupedBySpeaker(_ segments: [TranscriptionSegment]) -> String {
+        var lines: [String] = []
+        var currentSpeaker: String? = nil
+        var currentText = ""
+        
+        for segment in segments {
+            let speaker = segment.speaker ?? "Unknown"
+            
+            if speaker != currentSpeaker {
+                if !currentText.isEmpty {
+                    let mappedSpeaker = currentSpeaker.map { speakerMappings[$0] ?? $0 }
+                    if showSpeakers, let spk = mappedSpeaker {
+                        lines.append("\(spk): \(currentText)")
+                    } else {
+                        lines.append(currentText)
+                    }
                 }
                 currentSpeaker = speaker
                 currentText = segment.text
-                currentStartTime = segment.start
             } else {
                 currentText += " " + segment.text
             }
         }
         
         if !currentText.isEmpty {
-            lines.append(formatSegmentLine(
-                speaker: currentSpeaker.map { speakerMappings[$0] ?? $0 },
-                startTime: currentStartTime,
-                text: currentText
-            ))
+            let mappedSpeaker = currentSpeaker.map { speakerMappings[$0] ?? $0 }
+            if showSpeakers, let spk = mappedSpeaker {
+                lines.append("\(spk): \(currentText)")
+            } else {
+                lines.append(currentText)
+            }
         }
         
         return lines.joined(separator: "\n\n")
     }
     
-    private func formatSegmentLine(speaker: String?, startTime: Double?, text: String) -> String {
-        var prefix = ""
-        
-        if showTimestamps, let time = startTime {
-            let minutes = Int(time) / 60
-            let seconds = Int(time) % 60
-            prefix += "[\(String(format: "%02d:%02d", minutes, seconds))] "
-        }
-        
-        if showSpeakers, let spk = speaker {
-            prefix += "\(spk): "
-        }
-        
-        return prefix + text.trimmingCharacters(in: .whitespaces)
-    }
+
     
     private func applyMappingsToText(_ text: String) -> String {
         var result = text
@@ -474,14 +550,18 @@ struct RecordingDetailView: View {
             
             if let keyPoints = analysis.keyPoints, !keyPoints.isEmpty {
                 GroupBox("Key Points") {
-                    ForEach(keyPoints.indices, id: \.self) { index in
-                        HStack(alignment: .top, spacing: 8) {
-                            Image(systemName: "circle.fill")
-                                .font(.system(size: 6))
-                                .foregroundColor(.blue)
-                                .padding(.top, 6)
-                            Text(keyPoints[index])
-                                .textSelection(.enabled)
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(keyPoints.indices, id: \.self) { index in
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: "circle.fill")
+                                    .font(.system(size: 6))
+                                    .foregroundColor(.blue)
+                                    .padding(.top, 6)
+                                    .frame(width: 16)
+                                Text(keyPoints[index])
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
                         }
                     }
                 }
@@ -489,12 +569,16 @@ struct RecordingDetailView: View {
             
             if let actionItems = analysis.actionItems, !actionItems.isEmpty {
                 GroupBox("Action Items & Next Steps") {
-                    ForEach(actionItems.indices, id: \.self) { index in
-                        HStack(alignment: .top, spacing: 8) {
-                            Image(systemName: "checkmark.circle")
-                                .foregroundColor(.blue)
-                            Text(actionItems[index])
-                                .textSelection(.enabled)
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(actionItems.indices, id: \.self) { index in
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: "checkmark.circle")
+                                    .foregroundColor(.blue)
+                                    .frame(width: 16)
+                                Text(actionItems[index])
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
                         }
                     }
                 }
@@ -502,12 +586,16 @@ struct RecordingDetailView: View {
             
             if let decisions = analysis.decisions, !decisions.isEmpty {
                 GroupBox("Decisions Made") {
-                    ForEach(decisions.indices, id: \.self) { index in
-                        HStack(alignment: .top, spacing: 8) {
-                            Image(systemName: "checkmark.seal.fill")
-                                .foregroundColor(.green)
-                            Text(decisions[index])
-                                .textSelection(.enabled)
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(decisions.indices, id: \.self) { index in
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: "checkmark.seal.fill")
+                                    .foregroundColor(.green)
+                                    .frame(width: 16)
+                                Text(decisions[index])
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
                         }
                     }
                 }
@@ -515,12 +603,16 @@ struct RecordingDetailView: View {
             
             if let questions = analysis.openQuestions, !questions.isEmpty {
                 GroupBox("Open Questions") {
-                    ForEach(questions.indices, id: \.self) { index in
-                        HStack(alignment: .top, spacing: 8) {
-                            Image(systemName: "questionmark.circle")
-                                .foregroundColor(.orange)
-                            Text(questions[index])
-                                .textSelection(.enabled)
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(questions.indices, id: \.self) { index in
+                            HStack(alignment: .top, spacing: 8) {
+                                Image(systemName: "questionmark.circle")
+                                    .foregroundColor(.orange)
+                                    .frame(width: 16)
+                                Text(questions[index])
+                                    .textSelection(.enabled)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                            }
                         }
                     }
                 }
@@ -700,10 +792,10 @@ struct RecordingDetailView: View {
                     }
                 } catch { }
                 
-                if pollCount > 180 {
+                if pollCount > 4320 {
                     isTranscribing = false
                     transcriptionStatus = ""
-                    errorMessage = "Transcription timed out. Check console for details."
+                    errorMessage = "Transcription timed out after 6 hours. Check console for details."
                     showErrorAlert = true
                     break
                 }

@@ -197,8 +197,8 @@ extension TranscriptionResultResponse: Codable {
 }
 
 struct TranscriptionSegment: Sendable {
-    let start: Double
-    let end: Double
+    let start: Double?
+    let end: Double?
     let text: String
     let speaker: String?
     let speakerConfidence: Double?
@@ -212,8 +212,8 @@ struct TranscriptionSegment: Sendable {
 extension TranscriptionSegment: Codable {
     nonisolated init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        start = try container.decode(Double.self, forKey: .start)
-        end = try container.decode(Double.self, forKey: .end)
+        start = try container.decodeIfPresent(Double.self, forKey: .start)
+        end = try container.decodeIfPresent(Double.self, forKey: .end)
         text = try container.decode(String.self, forKey: .text)
         speaker = try container.decodeIfPresent(String.self, forKey: .speaker)
         speakerConfidence = try container.decodeIfPresent(Double.self, forKey: .speakerConfidence)
@@ -221,8 +221,8 @@ extension TranscriptionSegment: Codable {
     
     nonisolated func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encode(start, forKey: .start)
-        try container.encode(end, forKey: .end)
+        try container.encodeIfPresent(start, forKey: .start)
+        try container.encodeIfPresent(end, forKey: .end)
         try container.encode(text, forKey: .text)
         try container.encodeIfPresent(speaker, forKey: .speaker)
         try container.encodeIfPresent(speakerConfidence, forKey: .speakerConfidence)
@@ -290,6 +290,14 @@ actor TranscriptionClient {
         body.append("Content-Disposition: form-data; name=\"language\"\r\n\r\n".data(using: .utf8)!)
         body.append("en\r\n".data(using: .utf8)!)
         
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"output_content\"\r\n\r\n".data(using: .utf8)!)
+        body.append("both\r\n".data(using: .utf8)!)
+        
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"timestamp_granularities\"\r\n\r\n".data(using: .utf8)!)
+        body.append("segment\r\n".data(using: .utf8)!)
+        
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
         
         request.httpBody = body
@@ -331,13 +339,17 @@ actor TranscriptionClient {
         
         try validateResponse(response, data: data)
         
+        if let responseString = String(data: data, encoding: .utf8) {
+            print("Job status raw response: \(responseString.prefix(2000))")
+        }
+        
         let statusResponse = try TranscriptionStatusResponse.decode(from: data)
         print("Job \(jobId) status: \(statusResponse.status), progress: \(statusResponse.progress ?? "unknown")")
         
         return statusResponse
     }
     
-    func pollUntilComplete(jobId: String, maxAttempts: Int = 120, intervalSeconds: TimeInterval = 5) async throws -> TranscriptionResultResponse {
+    func pollUntilComplete(jobId: String, maxAttempts: Int = 4320, intervalSeconds: TimeInterval = 5) async throws -> TranscriptionResultResponse {
         print("Polling for job completion: \(jobId)")
         
         for attempt in 0..<maxAttempts {
@@ -348,6 +360,10 @@ actor TranscriptionClient {
                 if let resultWrapper = status.result {
                     print("Job completed successfully")
                     let segments = resultWrapper.result?.segments ?? []
+                    print("Segments count: \(segments.count)")
+                    if let firstSeg = segments.first {
+                        print("First segment - start: \(String(describing: firstSeg.start)), end: \(String(describing: firstSeg.end)), speaker: \(firstSeg.speaker ?? "none"), text: \(firstSeg.text.prefix(50))")
+                    }
                     return TranscriptionResultResponse(
                         text: resultWrapper.text,
                         segments: segments,
@@ -414,7 +430,7 @@ enum TranscriptionError: LocalizedError {
         case .unknownStatus(let status):
             return "Unknown transcription status: \(status)"
         case .timeout:
-            return "Transcription timed out after 10 minutes"
+            return "Transcription timed out after 6 hours"
         }
     }
 }

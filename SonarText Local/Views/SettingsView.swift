@@ -145,6 +145,10 @@ struct SettingsView: View {
             Text("SonarText Local")
                 .font(.title)
             
+            Text("Build 2025.01.24.1")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            
             Text("Record, transcribe, and analyze audio")
                 .foregroundColor(.secondary)
             
