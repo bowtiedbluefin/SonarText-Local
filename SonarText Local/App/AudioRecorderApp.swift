@@ -149,6 +149,13 @@ final class AppState: ObservableObject {
         
         await localHosting.checkStatus()
         
+        if localHosting.state == .running {
+            configuration.transcriptionBaseURL = localHosting.serverURL
+            configuration.save()
+            print("Local transcription server already running, configured: \(localHosting.serverURL)")
+            return
+        }
+        
         if localHosting.isInstalled {
             print("Local server installed, attempting auto-start...")
             do {

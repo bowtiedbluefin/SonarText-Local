@@ -60,16 +60,30 @@ actor DockerClient {
         AsyncStream { continuation in
             Task { @MainActor in
                 let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/local/bin/docker")
-                process.arguments = ["pull", image]
                 
-                if !FileManager.default.fileExists(atPath: "/usr/local/bin/docker") {
-                    if FileManager.default.fileExists(atPath: "/usr/bin/docker") {
-                        process.executableURL = URL(fileURLWithPath: "/usr/bin/docker")
-                    } else if FileManager.default.fileExists(atPath: "/opt/homebrew/bin/docker") {
-                        process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/docker")
+                let dockerPaths = [
+                    "/usr/local/bin/docker",
+                    "/usr/bin/docker",
+                    "/opt/homebrew/bin/docker",
+                    "/Applications/Docker.app/Contents/Resources/bin/docker"
+                ]
+                
+                var dockerPath: String?
+                for path in dockerPaths {
+                    if FileManager.default.fileExists(atPath: path) {
+                        dockerPath = path
+                        break
                     }
                 }
+                
+                guard let executablePath = dockerPath else {
+                    continuation.yield(PullProgress(fraction: 0, status: "Docker not found"))
+                    continuation.finish()
+                    return
+                }
+                
+                process.executableURL = URL(fileURLWithPath: executablePath)
+                process.arguments = ["pull", image]
                 
                 let pipe = Pipe()
                 process.standardOutput = pipe
@@ -125,7 +139,7 @@ actor DockerClient {
         ports: [String],
         environment: [String: String],
         platform: String
-    ) async -> Bool {
+    ) async -> (success: Bool, error: String?) {
         var args = [
             "create",
             "--name", name
@@ -148,8 +162,9 @@ actor DockerClient {
         let result = await runDockerCommand(args)
         if result.exitCode != 0 {
             print("DockerClient: createContainer failed - exitCode: \(result.exitCode), stderr: \(result.stderr)")
+            return (false, result.stderr.trimmingCharacters(in: .whitespacesAndNewlines))
         }
-        return result.exitCode == 0
+        return (true, nil)
     }
     
     func startContainer(name: String) async -> Bool {

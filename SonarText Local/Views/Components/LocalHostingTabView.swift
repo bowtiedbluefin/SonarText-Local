@@ -95,6 +95,7 @@ struct BulletPoint: View {
 }
 
 struct DirectLocalHostingView: View {
+    @EnvironmentObject var appState: AppState
     @StateObject private var manager = LocalHostingManager.shared
     @State private var hfToken: String = ""
     @State private var showLogs = false
@@ -431,6 +432,8 @@ struct DirectLocalHostingView: View {
             do {
                 try await manager.downloadAndInstall(hfToken: hfToken.isEmpty ? nil : hfToken)
                 try await manager.start()
+                
+                await configureLocalServer()
             } catch {
                 errorMessage = error.localizedDescription
                 showError = true
@@ -438,10 +441,28 @@ struct DirectLocalHostingView: View {
         }
     }
     
+    private func configureLocalServer() async {
+        guard manager.state == .running else { return }
+        
+        appState.configuration.transcriptionBaseURL = manager.serverURL
+        appState.configuration.save()
+        
+        let transcriptionKey = try? KeychainManager.shared.load(key: .transcriptionApiKey)
+        try? await JobQueue.shared.configure(
+            transcriptionBaseURL: manager.serverURL,
+            transcriptionApiKey: transcriptionKey,
+            morpheusBaseURL: appState.configuration.morpheusBaseURL,
+            morpheusApiKey: (try? KeychainManager.shared.load(key: .morpheusApiKey)) ?? ""
+        )
+        
+        print("LocalHostingTabView: Configured app to use local server at \(manager.serverURL)")
+    }
+    
     private func startServer() {
         Task {
             do {
                 try await manager.start()
+                await configureLocalServer()
             } catch {
                 errorMessage = error.localizedDescription
                 showError = true
@@ -464,6 +485,7 @@ struct DirectLocalHostingView: View {
         Task {
             do {
                 try await manager.restart()
+                await configureLocalServer()
             } catch {
                 errorMessage = error.localizedDescription
                 showError = true

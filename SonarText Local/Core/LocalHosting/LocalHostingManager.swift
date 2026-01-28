@@ -99,15 +99,18 @@ final class LocalHostingManager: ObservableObject {
     
     /// Check current container status on launch
     func checkStatus() async {
-        // First check if Docker is available
         guard await dockerClient.isDockerRunning() else {
             let isInstalled = UserDefaults.standard.bool(forKey: "localServerInstalled")
             state = isInstalled ? .error("Docker Desktop is not running") : .notInstalled
             return
         }
         
-        // Check if our container exists
         if let status = await dockerClient.getContainerStatus(name: Self.containerName) {
+            if !UserDefaults.standard.bool(forKey: "localServerInstalled") {
+                UserDefaults.standard.set(true, forKey: "localServerInstalled")
+                print("LocalHostingManager: Container exists but flag was false - synced UserDefaults")
+            }
+            
             switch status {
             case "running":
                 state = .running
@@ -118,8 +121,11 @@ final class LocalHostingManager: ObservableObject {
                 state = .stopped
             }
         } else {
-            let isInstalled = UserDefaults.standard.bool(forKey: "localServerInstalled")
-            state = isInstalled ? .stopped : .notInstalled
+            if UserDefaults.standard.bool(forKey: "localServerInstalled") {
+                UserDefaults.standard.set(false, forKey: "localServerInstalled")
+                print("LocalHostingManager: Container missing but flag was true - reset UserDefaults")
+            }
+            state = .notInstalled
         }
     }
     
@@ -132,12 +138,18 @@ final class LocalHostingManager: ObservableObject {
         state = .downloading(progress: 0, status: "Pulling Docker image...")
         
         do {
-            // Pull the image with progress updates
+            var pullSucceeded = false
             for await progress in dockerClient.pullImage(Self.dockerImage) {
                 state = .downloading(progress: progress.fraction, status: progress.status)
+                if progress.fraction >= 1.0 && progress.status == "Complete" {
+                    pullSucceeded = true
+                }
             }
             
-            // Create the container
+            if !pullSucceeded {
+                throw LocalHostingError.pullFailed
+            }
+            
             state = .downloading(progress: 0.95, status: "Creating container...")
             
             try await createContainer(hfToken: hfToken)
@@ -278,7 +290,7 @@ final class LocalHostingManager: ObservableObject {
             env["HF_TOKEN"] = token
         }
         
-        let success = await dockerClient.createContainer(
+        let result = await dockerClient.createContainer(
             name: Self.containerName,
             image: Self.dockerImage,
             ports: ["\(Self.port):\(Self.internalPort)"],
@@ -286,8 +298,8 @@ final class LocalHostingManager: ObservableObject {
             platform: ""
         )
         
-        if !success {
-            throw LocalHostingError.createContainerFailed
+        if !result.success {
+            throw LocalHostingError.createContainerFailedWithMessage(result.error ?? "Unknown error")
         }
     }
     
@@ -339,6 +351,7 @@ enum LocalHostingError: LocalizedError {
     case invalidState
     case pullFailed
     case createContainerFailed
+    case createContainerFailedWithMessage(String)
     case startFailed
     case stopFailed
     case healthCheckFailed
@@ -353,9 +366,11 @@ enum LocalHostingError: LocalizedError {
         case .invalidState:
             return "Cannot perform this action in the current state"
         case .pullFailed:
-            return "Failed to download the Docker image"
+            return "Failed to download the Docker image. Check your internet connection and try again."
         case .createContainerFailed:
             return "Failed to create the container"
+        case .createContainerFailedWithMessage(let message):
+            return "Failed to create container: \(message)"
         case .startFailed:
             return "Failed to start the container"
         case .stopFailed:
