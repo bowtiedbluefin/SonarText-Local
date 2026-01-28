@@ -30,3 +30,4 @@ Package.resolved
 # Project files to exclude
 opencode_prompt.md
 plan.md
+.sisyphus/

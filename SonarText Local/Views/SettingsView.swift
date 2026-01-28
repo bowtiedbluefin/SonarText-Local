@@ -23,6 +23,11 @@ struct SettingsView: View {
                     Label("API", systemImage: "network")
                 }
             
+            LocalHostingTabView()
+                .tabItem {
+                    Label("Local Server", systemImage: "desktopcomputer")
+                }
+            
             permissionsTab
                 .tabItem {
                     Label("Permissions", systemImage: "lock.shield")
@@ -33,7 +38,7 @@ struct SettingsView: View {
                     Label("About", systemImage: "info.circle")
                 }
         }
-        .frame(width: 500, height: 450)
+        .frame(width: 550, height: 500)
         .onAppear {
             loadSettings()
             audioDeviceManager.refreshDevices()

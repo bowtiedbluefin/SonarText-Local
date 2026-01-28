@@ -142,8 +142,11 @@ actor DatabaseManager {
         guard let dbQueue else { throw DatabaseError.notInitialized }
         print("DatabaseManager: Fetching transcript for recordingId: \(recordingId.uuidString)")
         return try dbQueue.read { db in
-            let transcript = try Transcript.filter(Column("recordingId") == recordingId).fetchOne(db)
-            print("DatabaseManager: Transcript found: \(transcript != nil)")
+            let transcript = try Transcript
+                .filter(Column("recordingId") == recordingId)
+                .order(Column("createdAt").desc)
+                .fetchOne(db)
+            print("DatabaseManager: Transcript found: \(transcript != nil), text length: \(transcript?.text.count ?? 0)")
             return transcript
         }
     }

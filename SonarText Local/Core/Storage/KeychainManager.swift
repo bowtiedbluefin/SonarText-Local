@@ -4,6 +4,7 @@ import Security
 enum KeychainKey: String {
     case transcriptionApiKey = "com.audiorecorder.transcription.apikey"
     case morpheusApiKey = "com.audiorecorder.morpheus.apikey"
+    case huggingFaceToken = "com.audiorecorder.huggingface.token"
 }
 
 struct KeychainManager {

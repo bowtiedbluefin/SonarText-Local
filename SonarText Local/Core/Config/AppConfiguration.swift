@@ -7,7 +7,7 @@ struct AppConfiguration {
     static var `default`: AppConfiguration {
         AppConfiguration(
             transcriptionBaseURL: ProcessInfo.processInfo.environment["TRANSCRIBE_BASE_URL"] ?? "https://api.transcription.example.com",
-            morpheusBaseURL: ProcessInfo.processInfo.environment["MORPHEUS_BASE_URL"] ?? "https://api.morpheus.example.com"
+            morpheusBaseURL: ProcessInfo.processInfo.environment["MORPHEUS_BASE_URL"] ?? "https://api.mor.org/api/v1"
         )
     }
     

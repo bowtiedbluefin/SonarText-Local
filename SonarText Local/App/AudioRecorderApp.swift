@@ -12,16 +12,18 @@ struct AudioRecorderApp: App {
             MenuBarView()
                 .environmentObject(appState)
         } label: {
-            Image(systemName: appState.recordingController.state.isRecording ? "record.circle.fill" : "record.circle")
-                .symbolRenderingMode(.multicolor)
+            if appState.recordingController.state.isRecording {
+                Image(systemName: "record.circle.fill")
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.red, .red)
+            } else {
+                Image(systemName: "record.circle")
+            }
         }
         
         Window("SonarText Library", id: "library") {
-            ContentView()
+            LibraryWindowContent()
                 .environmentObject(appState)
-                .onReceive(NotificationCenter.default.publisher(for: .openLibraryWindow)) { _ in
-                    NSApp.activate(ignoringOtherApps: true)
-                }
         }
         .defaultSize(width: 800, height: 600)
         
@@ -37,22 +39,62 @@ struct AudioRecorderApp: App {
         }
     }
     
-    init() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            NotificationCenter.default.post(name: .openLibraryWindow, object: nil)
-        }
+    init() {}
+}
+
+struct LibraryWindowContent: View {
+    @Environment(\.openWindow) private var openWindow
+    
+    var body: some View {
+        ContentView()
+            .onAppear {
+                AppDelegate.openWindowAction = openWindow
+                NSApp.activate(ignoringOtherApps: true)
+            }
     }
 }
+
+
 
 extension Notification.Name {
     static let openLibraryWindow = Notification.Name("openLibraryWindow")
 }
 
 class AppDelegate: NSObject, NSApplicationDelegate {
+    static var openWindowAction: OpenWindowAction?
+    private var hasLaunched = false
+    
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+    }
+    
     func applicationDidFinishLaunching(_ notification: Notification) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            if let window = NSApp.windows.first(where: { $0.title.contains("Library") }) {
-                window.makeKeyAndOrderFront(nil)
+        hasLaunched = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            Self.showLibraryWindow()
+        }
+    }
+    
+    func applicationDidBecomeActive(_ notification: Notification) {
+        guard hasLaunched else { return }
+        Self.showLibraryWindow()
+    }
+    
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        Self.showLibraryWindow()
+        return true
+    }
+    
+    static func showLibraryWindow() {
+        if let window = NSApp.windows.first(where: { $0.title.contains("Library") }) {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+        } else if let openWindow = openWindowAction {
+            openWindow(id: "library")
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                if let window = NSApp.windows.first(where: { $0.title.contains("Library") }) {
+                    window.makeKeyAndOrderFront(nil)
+                }
                 NSApp.activate(ignoringOtherApps: true)
             }
         }
@@ -87,15 +129,39 @@ final class AppState: ObservableObject {
             let transcriptionKey = try? KeychainManager.shared.load(key: .transcriptionApiKey)
             let morpheusKey = try? KeychainManager.shared.load(key: .morpheusApiKey)
             
-            print("Configuring JobQueue with transcription URL: \(configuration.transcriptionBaseURL)")
+            await initializeLocalHosting()
+            
+            let transcriptionURL = configuration.transcriptionBaseURL
+            print("Configuring JobQueue with transcription URL: \(transcriptionURL)")
             try? await JobQueue.shared.configure(
-                transcriptionBaseURL: configuration.transcriptionBaseURL,
+                transcriptionBaseURL: transcriptionURL,
                 transcriptionApiKey: transcriptionKey,
                 morpheusBaseURL: configuration.morpheusBaseURL,
                 morpheusApiKey: morpheusKey ?? ""
             )
         } catch {
             print("Initialization error: \(error)")
+        }
+    }
+    
+    private func initializeLocalHosting() async {
+        let localHosting = LocalHostingManager.shared
+        
+        await localHosting.checkStatus()
+        
+        if localHosting.isInstalled {
+            print("Local server installed, attempting auto-start...")
+            do {
+                try await localHosting.start()
+                
+                if localHosting.state == .running {
+                    configuration.transcriptionBaseURL = localHosting.serverURL
+                    configuration.save()
+                    print("Local transcription server started and configured: \(localHosting.serverURL)")
+                }
+            } catch {
+                print("Failed to auto-start local server: \(error)")
+            }
         }
     }
 }
