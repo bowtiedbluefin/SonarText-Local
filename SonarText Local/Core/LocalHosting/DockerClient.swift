@@ -27,8 +27,22 @@ actor DockerClient {
     }
     
     func isDockerRunning() async -> Bool {
+        guard Self.findDockerExecutable() != nil else {
+            print("DockerClient: Docker executable not found")
+            return false
+        }
+        
         let result = await runDockerCommand(["version", "--format", "{{.Server.Version}}"])
         print("DockerClient: isDockerRunning check - exitCode: \(result.exitCode), stdout: \(result.stdout), stderr: \(result.stderr)")
+        
+        if result.exitCode != 0 {
+            if result.stderr.contains("Cannot connect to the Docker daemon") {
+                print("DockerClient: Docker daemon not running")
+            } else if result.stderr.contains("permission denied") {
+                print("DockerClient: Docker permission denied")
+            }
+        }
+        
         return result.exitCode == 0
     }
     
@@ -58,25 +72,10 @@ actor DockerClient {
     
     nonisolated func pullImage(_ image: String) -> AsyncStream<PullProgress> {
         AsyncStream { continuation in
-            Task { @MainActor in
+            Task.detached {
                 let process = Process()
                 
-                let dockerPaths = [
-                    "/usr/local/bin/docker",
-                    "/usr/bin/docker",
-                    "/opt/homebrew/bin/docker",
-                    "/Applications/Docker.app/Contents/Resources/bin/docker"
-                ]
-                
-                var dockerPath: String?
-                for path in dockerPaths {
-                    if FileManager.default.fileExists(atPath: path) {
-                        dockerPath = path
-                        break
-                    }
-                }
-                
-                guard let executablePath = dockerPath else {
+                guard let executablePath = await Self.findDockerExecutable() else {
                     continuation.yield(PullProgress(fraction: 0, status: "Docker not found"))
                     continuation.finish()
                     return
@@ -85,13 +84,28 @@ actor DockerClient {
                 process.executableURL = URL(fileURLWithPath: executablePath)
                 process.arguments = ["pull", image]
                 
-                let pipe = Pipe()
-                process.standardOutput = pipe
-                process.standardError = pipe
+                let stdoutPipe = Pipe()
+                let stderrPipe = Pipe()
+                process.standardOutput = stdoutPipe
+                process.standardError = stderrPipe
                 
                 let progressActor = ProgressTracker()
                 
-                pipe.fileHandleForReading.readabilityHandler = { handle in
+                actor OutputCollector {
+                    var stderr = ""
+                    
+                    func append(_ text: String) {
+                        stderr += text
+                    }
+                    
+                    func getStderr() -> String {
+                        return stderr
+                    }
+                }
+                
+                let stderrCollector = OutputCollector()
+                
+                stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
                     let data = handle.availableData
                     if let output = String(data: data, encoding: .utf8), !output.isEmpty {
                         Task {
@@ -104,6 +118,8 @@ actor DockerClient {
                                 status = "Extracting..."
                             } else if output.contains("Pull complete") {
                                 status = "Layer complete"
+                            } else if output.contains("Image is up to date") {
+                                status = "Already downloaded"
                             } else {
                                 status = "Downloading..."
                             }
@@ -113,16 +129,46 @@ actor DockerClient {
                     }
                 }
                 
+                stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+                    let data = handle.availableData
+                    if let output = String(data: data, encoding: .utf8), !output.isEmpty {
+                        Task {
+                            await stderrCollector.append(output)
+                        }
+                    }
+                }
+                
                 do {
                     try process.run()
-                    process.waitUntilExit()
                     
-                    pipe.fileHandleForReading.readabilityHandler = nil
+                    let timeoutTask = Task {
+                        try await Task.sleep(nanoseconds: 600_000_000_000)
+                        if process.isRunning {
+                            process.terminate()
+                        }
+                    }
+                    
+                    process.waitUntilExit()
+                    timeoutTask.cancel()
+                    
+                    stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                    stderrPipe.fileHandleForReading.readabilityHandler = nil
                     
                     if process.terminationStatus == 0 {
                         continuation.yield(PullProgress(fraction: 1.0, status: "Complete"))
                     } else {
-                        continuation.yield(PullProgress(fraction: 0, status: "Failed"))
+                        let stderrContent = await stderrCollector.getStderr()
+                        var errorMessage = "Failed"
+                        if stderrContent.contains("429") || stderrContent.contains("rate limit") {
+                            errorMessage = "Rate limited by Docker Hub. Try again later."
+                        } else if stderrContent.contains("no space left") || stderrContent.contains("insufficient space") {
+                            errorMessage = "Insufficient disk space"
+                        } else if stderrContent.contains("denied") || stderrContent.contains("permission") {
+                            errorMessage = "Permission denied - check Docker access"
+                        } else if !stderrContent.isEmpty {
+                            errorMessage = "Failed: \(stderrContent.prefix(100))"
+                        }
+                        continuation.yield(PullProgress(fraction: 0, status: errorMessage))
                     }
                 } catch {
                     continuation.yield(PullProgress(fraction: 0, status: "Error: \(error.localizedDescription)"))
@@ -194,23 +240,7 @@ actor DockerClient {
     private func runDockerCommand(_ args: [String]) async -> ProcessResult {
         let process = Process()
         
-        // Find Docker executable
-        let dockerPaths = [
-            "/usr/local/bin/docker",
-            "/usr/bin/docker",
-            "/opt/homebrew/bin/docker",
-            "/Applications/Docker.app/Contents/Resources/bin/docker"
-        ]
-        
-        var dockerPath: String?
-        for path in dockerPaths {
-            if FileManager.default.fileExists(atPath: path) {
-                dockerPath = path
-                break
-            }
-        }
-        
-        guard let executablePath = dockerPath else {
+        guard let executablePath = Self.findDockerExecutable() else {
             return ProcessResult(exitCode: -1, stdout: "", stderr: "Docker not found")
         }
         
@@ -237,6 +267,28 @@ actor DockerClient {
         } catch {
             return ProcessResult(exitCode: -1, stdout: "", stderr: error.localizedDescription)
         }
+    }
+    
+    nonisolated private static func findDockerExecutable() -> String? {
+        let dockerPaths = [
+            "/Applications/Docker.app/Contents/Resources/bin/docker",
+            "/opt/homebrew/bin/docker",
+            "/usr/local/bin/docker",
+            "/usr/bin/docker"
+        ]
+        
+        let fileManager = FileManager.default
+        for path in dockerPaths {
+            var isDirectory: ObjCBool = false
+            let exists = fileManager.fileExists(atPath: path, isDirectory: &isDirectory)
+            guard exists && !isDirectory.boolValue else { continue }
+            
+            let resolved = (path as NSString).resolvingSymlinksInPath
+            if fileManager.isExecutableFile(atPath: resolved) {
+                return path
+            }
+        }
+        return nil
     }
 }
 

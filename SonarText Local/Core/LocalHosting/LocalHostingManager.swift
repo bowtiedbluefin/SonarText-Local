@@ -131,25 +131,42 @@ final class LocalHostingManager: ObservableObject {
     
     /// Download and install the Docker image
     func downloadAndInstall(hfToken: String?) async throws {
-        guard await dockerClient.isDockerRunning() else {
+        print("LocalHostingManager: Starting installation")
+        print("LocalHostingManager: Docker image: \(Self.dockerImage)")
+        
+        let dockerRunning = await dockerClient.isDockerRunning()
+        print("LocalHostingManager: Docker running check: \(dockerRunning)")
+        
+        guard dockerRunning else {
+            print("LocalHostingManager: Docker is not running or not installed")
             throw LocalHostingError.dockerNotRunning
         }
         
+        print("LocalHostingManager: Cleaning up any stale containers")
+        await cleanupStaleContainer()
+        
         state = .downloading(progress: 0, status: "Pulling Docker image...")
+        print("LocalHostingManager: Starting image pull")
         
         do {
             var pullSucceeded = false
+            var lastStatus = ""
             for await progress in dockerClient.pullImage(Self.dockerImage) {
                 state = .downloading(progress: progress.fraction, status: progress.status)
+                lastStatus = progress.status
+                print("LocalHostingManager: Pull progress - \(progress.fraction * 100)% - \(progress.status)")
                 if progress.fraction >= 1.0 && progress.status == "Complete" {
                     pullSucceeded = true
                 }
             }
             
             if !pullSucceeded {
-                throw LocalHostingError.pullFailed
+                print("LocalHostingManager: Pull failed - last status: \(lastStatus)")
+                let detailedError = lastStatus.isEmpty ? "Check your internet connection and Docker status" : lastStatus
+                throw LocalHostingError.pullFailedWithMessage(detailedError)
             }
             
+            print("LocalHostingManager: Pull succeeded, creating container")
             state = .downloading(progress: 0.95, status: "Creating container...")
             
             try await createContainer(hfToken: hfToken)
@@ -163,6 +180,7 @@ final class LocalHostingManager: ObservableObject {
             print("LocalHostingManager: Successfully installed local transcription server")
             
         } catch {
+            print("LocalHostingManager: Installation failed with error: \(error)")
             state = .error("Installation failed: \(error.localizedDescription)")
             throw error
         }
@@ -176,6 +194,11 @@ final class LocalHostingManager: ObservableObject {
         
         guard await dockerClient.isDockerRunning() else {
             throw LocalHostingError.dockerNotRunning
+        }
+        
+        if isPortInUse(Self.port) {
+            print("LocalHostingManager: Port \(Self.port) is already in use")
+            throw LocalHostingError.portInUse
         }
         
         state = .starting
@@ -283,6 +306,34 @@ final class LocalHostingManager: ObservableObject {
     
     // MARK: - Private Methods
     
+    private func cleanupStaleContainer() async {
+        let status = await dockerClient.getContainerStatus(name: Self.containerName)
+        if status != nil {
+            print("LocalHostingManager: Removing stale container before installation")
+            _ = await dockerClient.stopContainer(name: Self.containerName)
+            _ = await dockerClient.removeContainer(name: Self.containerName)
+        }
+    }
+    
+    private func isPortInUse(_ port: Int) -> Bool {
+        let socketFD = socket(AF_INET, SOCK_STREAM, 0)
+        guard socketFD != -1 else { return false }
+        defer { close(socketFD) }
+        
+        var addr = sockaddr_in()
+        addr.sin_family = sa_family_t(AF_INET)
+        addr.sin_port = in_port_t(port).bigEndian
+        addr.sin_addr.s_addr = INADDR_ANY
+        
+        let bindResult = withUnsafePointer(to: &addr) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                bind(socketFD, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        
+        return bindResult != 0
+    }
+    
     private func createContainer(hfToken: String?) async throws {
         var env: [String: String] = [:]
         
@@ -350,13 +401,13 @@ enum LocalHostingError: LocalizedError {
     case dockerNotRunning
     case invalidState
     case pullFailed
+    case pullFailedWithMessage(String)
     case createContainerFailed
     case createContainerFailedWithMessage(String)
     case startFailed
     case stopFailed
     case healthCheckFailed
     case portInUse
-    
     var errorDescription: String? {
         switch self {
         case .dockerNotInstalled:
@@ -367,6 +418,8 @@ enum LocalHostingError: LocalizedError {
             return "Cannot perform this action in the current state"
         case .pullFailed:
             return "Failed to download the Docker image. Check your internet connection and try again."
+        case .pullFailedWithMessage(let message):
+            return "Failed to download Docker image: \(message)"
         case .createContainerFailed:
             return "Failed to create the container"
         case .createContainerFailedWithMessage(let message):
