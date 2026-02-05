@@ -454,6 +454,13 @@ actor TranscriptionClient {
                 if httpResponse.statusCode == 200 {
                     if let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                         print("TranscriptionClient: Parsed JSON: \(json)")
+                        
+                        // Check for sonartext API format first (has models_loaded or concurrency fields)
+                        if json["models_loaded"] != nil || json["concurrency"] != nil {
+                            print("TranscriptionClient: Detected sonartext format (has models_loaded/concurrency)")
+                            return .sonartext
+                        }
+                        
                         if let status = json["status"] as? String {
                             print("TranscriptionClient: Status value: '\(status)'")
                             if status == "healthy" {
